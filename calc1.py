@@ -48,6 +48,9 @@ class Interpreter(object):
         """
         text = self.text
 
+        while self.pos < len(text) and text[self.pos].isspace():
+            self.pos += 1
+
         # is self.pos index past the end of the self.text ?
         # if so, then return EOF token because there is no more
         # input left to convert into tokens
