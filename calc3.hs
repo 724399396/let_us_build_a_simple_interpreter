@@ -18,7 +18,7 @@ instance Monad Parser where
     runParser (f a) s'
 
 instance Alternative Parser where
-  empty = Parser $ \s -> Nothing
+  empty = Parser $ \_ -> Nothing
   pa <|> pb = Parser $ \s -> case runParser pa s of
                                  Nothing -> runParser pb s
                                  x -> x
@@ -38,37 +38,37 @@ oneOf strs = asum $ map char strs
 whitespace :: Parser ()
 whitespace = (many $ satisfy isSpace) >> return ()
 
-int :: Parser Int
-int = read <$> (many $ satisfy isDigit)
+factor :: Parser Int
+factor = read <$> (many $ satisfy isDigit)
 
-op :: Parser Op
-op = (char '+' >> return Add)
-     <|> (char '-' >> return Sub)
-     <|> (char '*' >> return Mul)
-     <|> (char '/' >> return Div)
-
-data Op = Add | Sub | Mul | Div deriving (Show, Eq)
-data Expr = Expr Op Expr Expr | Val Int deriving Show
-
-parse :: Parser Expr
-parse = do
+expr :: Parser Int
+expr = do
   whitespace
-  v <- int
-  (do whitespace
-      o <- op
-      l <- parse
-      return $ Expr o (Val v) l) <|> (return $ Val v)
+  l <- term
+  (do
+    whitespace
+    o <- (char '+' <|>  char '-')
+    whitespace
+    r <- expr
+    case o of
+      '+' -> return $ l + r
+      '-' -> return $ l - r) <|> (return l)
 
-eval :: Expr -> Int
-eval (Val x) = x
-eval (Expr o l r) | o == Add = (eval l) + (eval r)
-                  | o == Sub = (eval l) - (eval r)
-                  | o == Mul = (eval l) * (eval r)
-                  | o == Div = (eval l) `div` (eval r)
-                  
-expr :: String -> String
-expr ip = case runParser parse ip of
-            Just (x, _) -> show $ eval x
+term :: Parser Int
+term = do
+  whitespace
+  l <- factor
+  (do whitespace
+      o <- (char '*' <|> char '/')
+      whitespace
+      r <- term
+      case o of
+        '*' -> return $ l * r
+        '/' -> return $ l `div` r) <|> (return l)
+
+interpreter :: String -> String
+interpreter ip = case runParser expr ip of
+            Just (x, _) -> show x
             Nothing -> "Parser error"
 
 main :: IO String
@@ -76,4 +76,4 @@ main = forever $
   do
     putStr "calc>"
     l <- getLine
-    putStrLn $ expr l
+    putStrLn $ interpreter l
