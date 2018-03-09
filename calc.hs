@@ -38,33 +38,35 @@ oneOf strs = asum $ map char strs
 whitespace :: Parser ()
 whitespace = (many $ satisfy isSpace) >> return ()
 
+token :: Parser a -> Parser a
+token pa = whitespace >> pa
+
 factor :: Parser Int
-factor = read <$> (many $ satisfy isDigit)
+factor = (do token $ char '('
+             v <- expr
+             token $ char ')'
+             return v)
+  <|> read <$> (token $ many $ satisfy isDigit)
 
 expr :: Parser Int
 expr = do
-  whitespace
   l <- term
-  (do
-    whitespace
-    o <- (char '+' <|>  char '-')
-    whitespace
-    r <- expr
-    case o of
-      '+' -> return $ l + r
-      '-' -> return $ l - r) <|> (return l)
+  opt <- many (do o <- token (char '+' <|>  char '-')
+                  r <- term
+                  case o of
+                    '+' -> return (+ r)
+                    '-' -> return (`subtract` r))
+  return $ foldl (flip ($)) l opt
 
 term :: Parser Int
 term = do
-  whitespace
   l <- factor
-  (do whitespace
-      o <- (char '*' <|> char '/')
-      whitespace
-      r <- term
-      case o of
-        '*' -> return $ l * r
-        '/' -> return $ l `div` r) <|> (return l)
+  opt <- many (do o <- token (char '*' <|> char '/')
+                  r <- factor
+                  case o of
+                    '*' -> return (* r)
+                    '/' -> return (`div` r))
+  return $ foldl (flip ($)) l opt
 
 interpreter :: String -> String
 interpreter ip = case runParser expr ip of
