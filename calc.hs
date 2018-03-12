@@ -55,7 +55,7 @@ expr = do
                   r <- term
                   case o of
                     '+' -> return (+ r)
-                    '-' -> return (`subtract` r))
+                    '-' -> return (\x -> x - r))
   return $ foldl (flip ($)) l opt
 
 term :: Parser Int
