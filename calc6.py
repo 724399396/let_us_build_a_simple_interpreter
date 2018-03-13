@@ -8,10 +8,10 @@ class Token(object):
 
     def __str__(self):
         return 'Token ({type}, {value})'.format(
-            type=self.type, value=self.value
+            type=self.type, value=repr(self.value)
         )
 
-    def __repl__(self):
+    def __repr__(self):
         return self.__str__()
 
 class Lexer(object):
