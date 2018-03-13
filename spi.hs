@@ -24,7 +24,9 @@ instance Alternative Parser where
                                  x -> x
 
 data Op = Plus | Minus | Mul | Div deriving (Show, Eq)
+data Unary = Pos | Neg deriving (Show, Eq)
 data Expr = BinOp Expr Op Expr |
+            UnaryOp Unary Expr |
             Val Int deriving Show
 
 satisfy :: (Char -> Bool) -> Parser Char
@@ -46,10 +48,13 @@ token :: Parser a -> Parser a
 token pa = whitespace >> pa
 
 factor :: Parser Expr
-factor = (do token $ char '('
-             v <- expr
-             token $ char ')'
-             return v)
+factor =
+  (do _ <- token $ char '('
+      v <- expr
+      _ <- token $ char ')'
+      return v)
+  <|> (token $ char '+' >> (UnaryOp Pos) <$> expr)
+  <|> (token $ char '-' >> (UnaryOp Neg) <$> expr)
   <|> (Val . read) <$> (token $ many $ satisfy isDigit)
 
 expr :: Parser Expr
@@ -58,8 +63,8 @@ expr = do
   opt <- many (do o <- token (char '+' <|>  char '-')
                   r <- term
                   case o of
-                    '+' -> return (\l -> BinOp l Plus r)
-                    '-' -> return (\l -> BinOp l Minus r))
+                    '+' -> return (\i -> BinOp i Plus r)
+                    '-' -> return (\i -> BinOp i Minus r))
   return $ foldl (flip ($)) l opt
 
 term :: Parser Expr
@@ -68,8 +73,8 @@ term = do
   opt <- many (do o <- token (char '*' <|> char '/')
                   r <- factor
                   case o of
-                    '*' -> return (\l -> BinOp l Mul r)
-                    '/' -> return (\l -> BinOp l Div r))
+                    '*' -> return (\i -> BinOp i Mul r)
+                    '/' -> return (\i -> BinOp i Div r))
   return $ foldl (flip ($)) l opt
 
 parse :: String -> Expr
@@ -84,6 +89,9 @@ interpret (BinOp l op r) = case op of
   Minus -> interpret l - interpret r
   Mul -> interpret l * interpret r
   Div -> interpret l `div` interpret r
+interpret (UnaryOp op e) = case op of
+  Pos -> interpret e
+  Neg -> negate $ interpret e
 
 main :: IO String
 main = forever $
