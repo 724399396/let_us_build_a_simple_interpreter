@@ -10,7 +10,7 @@
 #
 # EOF (end-of-file) token is used to indicate that
 # there is no more input left for lexical analysis
-INTEGER, PLUS, MINUS, MUL, DIV, LPAREN, RPAREN, EOF, ID, ASSIGN, SEMI, DOT, BEGIN, END = (
+(INTEGER, PLUS, MINUS, MUL, DIV, LPAREN, RPAREN, EOF, ID, ASSIGN, SEMI, DOT, BEGIN, END) = (
     'INTEGER', 'PLUS', 'MINUS', 'MUL', 'DIV', '(', ')', 'EOF', 'ID', 'ASSIGN', 'SEMI', 'DOT', 'BEGIN', 'END'
 )
 
@@ -36,8 +36,9 @@ class Token(object):
         return self.__str__()
 
 RESERVED_KEYWORDS = {
-    'BEGIN': Token(BEGIN, 'BEGIN'),
-    'END': Token(END, 'END'),
+    'begin': Token(BEGIN, 'BEGIN'),
+    'end': Token(END, 'END'),
+    'div': Token(DIV, '/'),
 }
 
 class Lexer(object):
@@ -50,7 +51,7 @@ class Lexer(object):
         self.current_char = self.text[self.pos]
 
     def error(self):
-        raise Exception('Invalid character')
+        raise Exception('Invalid character: ' + self.current_char)
 
     def advance(self):
         """Advance the `pos` pointer and set the `current_char` variable."""
@@ -82,8 +83,12 @@ class Lexer(object):
     def _id(self):
         """Handle identifiers and reserved keywords"""
         result = ''
+        if self.current_char is not None and self.current_char == '_':
+            result += '_'
+            self.advance()
+
         while self.current_char is not None and self.current_char.isalnum():
-            result += self.current_char
+            result += self.current_char.lower()
             self.advance()
 
         token = RESERVED_KEYWORDS.get(result, Token(ID, result))
@@ -104,7 +109,7 @@ class Lexer(object):
             if self.current_char.isdigit():
                 return Token(INTEGER, self.integer())
 
-            if self.current_char.isalpha():
+            if self.current_char.isalpha() or self.current_char == '_':
                 return self._id()
 
             if self.current_char == '+':
@@ -118,10 +123,6 @@ class Lexer(object):
             if self.current_char == '*':
                 self.advance()
                 return Token(MUL, '*')
-
-            if self.current_char == '/':
-                self.advance()
-                return Token(DIV, '/')
 
             if self.current_char == '(':
                 self.advance()
@@ -203,7 +204,7 @@ class Parser(object):
         self.current_token = self.lexer.get_next_token()
 
     def error(self):
-        raise Exception('Invalid syntax')
+        raise Exception('Invalid syntax: ' + str(self.current_token))
 
     def eat(self, token_type):
         # compare the current token type with the passed token
@@ -213,7 +214,6 @@ class Parser(object):
         if self.current_token.type == token_type:
             self.current_token = self.lexer.get_next_token()
         else:
-            print repr(self.current_token)
             self.error()
 
     def program(self):
@@ -407,7 +407,7 @@ class Interpreter(NodeVisitor):
     def visit_Var(self, node):
         var_name = node.value
         val = self.GLOBAL_SCOPE.get(var_name)
-        if var is None:
+        if val is None:
             raise NameError(repr(var_name))
         else:
             return val
@@ -418,22 +418,14 @@ class Interpreter(NodeVisitor):
 
 
 def main():
-    while True:
-        try:
-            try:
-                text = raw_input('spi> ')
-            except NameError:  # Python3
-                text = input('spi> ')
-        except EOFError:
-            break
-        if not text:
-            continue
+    import sys
+    text = open(sys.argv[1], 'r').read()
 
-        lexer = Lexer(text)
-        parser = Parser(lexer)
-        interpreter = Interpreter(parser)
-        interpreter.interpret() 
-        print(interpreter.GLOBAL_SCOPE)
+    lexer = Lexer(text)
+    parser = Parser(lexer)
+    interpreter = Interpreter(parser)
+    interpreter.interpret()
+    print(interpreter.GLOBAL_SCOPE)
 
 
 if __name__ == '__main__':

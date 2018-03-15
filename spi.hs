@@ -23,11 +23,16 @@ instance Alternative Parser where
                                  Nothing -> runParser pb s
                                  x -> x
 
+type Identity = String
 data Op = Plus | Minus | Mul | Div deriving (Show, Eq)
 data Unary = Pos | Neg deriving (Show, Eq)
 data Expr = BinOp Expr Op Expr |
             UnaryOp Unary Expr |
             Val Int deriving Show
+
+data Program = Compound [Assign]
+data Assign = Assign Var Expr
+data Var = Var Identity
 
 satisfy :: (Char -> Bool) -> Parser Char
 satisfy cond = Parser $ \s ->
@@ -38,6 +43,9 @@ satisfy cond = Parser $ \s ->
 char :: Char -> Parser Char
 char c = satisfy (c==)
 
+string :: String -> Parser String
+string str = traverse char str
+
 oneOf :: String -> Parser Char
 oneOf strs = asum $ map char strs
 
@@ -46,6 +54,23 @@ whitespace = (many $ satisfy isSpace) >> return ()
 
 token :: Parser a -> Parser a
 token pa = whitespace >> pa
+
+program :: Parser Program
+program = do
+  r <- compoundStatement
+  _ <- token $ char '.'
+  return r
+
+compoundStatement :: Parser Program
+compoundStatement = do
+  _ <- token $ string "begin"
+  nodes <- statementList
+  _ <- token $ string "end"
+  return nodes
+
+statementList :: Parser Program
+statementList = do
+  n <-
 
 factor :: Parser Expr
 factor =
