@@ -69,8 +69,30 @@ compoundStatement = do
   return nodes
 
 statementList :: Parser Program
-statementList = do
-  n <-
+statementList =
+  (do Compound n <- statement
+      _ <- token $ char ';'
+      Compound left <- statementList
+      return $ Compound (n++left)) <|>
+  statement
+
+statement :: Parser Program
+statement = compoundStatement
+  <|> assignmentStatement
+  <|> empty
+
+assignmentStatement :: Parser Program
+assignmentStatement = do
+  v <- variable
+  _ <- token $ string ":="
+  e <- expr
+  return $ Compound [Assign v e]
+
+variable :: Parser Var
+variable = do
+  f <- satisfy (\c -> isLetter c || c == '_')
+  left <- many $ satisfy isLetter
+  return $ Var (f:left)
 
 factor :: Parser Expr
 factor =
