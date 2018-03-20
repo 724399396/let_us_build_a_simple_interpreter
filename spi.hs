@@ -3,48 +3,71 @@ import Control.Monad
 import Control.Applicative
 import Data.Foldable
 import Data.Char
+import Data.Function
 
-data Parser a = Parser {runParser :: (String -> Maybe (a,String))}
-  deriving Functor
+newtype Identity a = Identity { runIdentity :: a } deriving Functor
 
-instance Applicative Parser where
+instance Applicative Identity where
   pure = return
   (<*>) = ap
 
-instance Monad Parser where
-  return a = Parser $ \s -> Just (a,s)
-  pa >>= f = Parser $ \s -> do
-    (a,s') <- (runParser pa s)
-    runParser (f a) s'
+instance Monad Identity where
+  return = Identity
+  ia >>= f = f $ runIdentity ia
 
-instance Alternative Parser where
-  empty = Parser $ \_ -> Nothing
-  pa <|> pb = Parser $ \s -> case runParser pa s of
-                                 Nothing -> runParser pb s
-                                 x -> x
+data ParserT m a = ParserT {runParserT :: String -> m (Maybe (a,String))}
+  deriving Functor
 
-type Identity = String
+type Parser = ParserT Identity
+
+instance (Monad m) => Applicative (ParserT m) where
+  pure = return
+  (<*>) = ap
+
+instance (Monad m) => Monad (ParserT m) where
+  return a = ParserT $ \s -> return $ Just (a,s)
+  mpa >>= f = ParserT $ \s -> do pa <- runParserT mpa s
+                                 case pa of
+                                   Just (a,s') -> runParserT (f a) s'
+                                   Nothing -> return Nothing
+
+instance (Monad m) => Alternative (ParserT m) where
+  empty = ParserT $ \_ -> return Nothing
+  pa <|> pb = ParserT $ \s -> do x <- runParserT pa s
+                                 case x of
+                                   Nothing -> runParserT pb s
+                                   x -> return x
+
+type Identifier = String
 data Op = Plus | Minus | Mul | Div deriving (Show, Eq)
 data Unary = Pos | Neg deriving (Show, Eq)
 data Expr = BinOp Expr Op Expr |
             UnaryOp Unary Expr |
-            Val Int deriving Show
+            ExprVal Int |
+            ExprVar Var
+            deriving Show
 
-data Program = Compound [Assign]
-data Assign = Assign Var Expr
-data Var = Var Identity
+data Program = Compound [Assign] deriving Show
+data Assign = Assign Var Expr deriving Show
+data Var = Var Identifier deriving Show
 
 satisfy :: (Char -> Bool) -> Parser Char
-satisfy cond = Parser $ \s ->
-  case s of
-    x:xs -> if (cond x) then Just (x,xs) else Nothing
-    _ -> Nothing
+satisfy cond = ParserT $ \s ->
+  return $ case s of
+             x:xs -> if (cond x) then Just (x,xs) else Nothing
+             _ -> Nothing
 
 char :: Char -> Parser Char
 char c = satisfy (c==)
 
+ignoreCaseChar :: Char -> Parser Char
+ignoreCaseChar c = satisfy (on (==) toLower c)
+
 string :: String -> Parser String
 string str = traverse char str
+
+ignoreCaseString :: String -> Parser String
+ignoreCaseString str = traverse ignoreCaseChar str
 
 oneOf :: String -> Parser Char
 oneOf strs = asum $ map char strs
@@ -61,17 +84,29 @@ program = do
   _ <- token $ char '.'
   return r
 
+begin :: Parser ()
+begin = token $ ignoreCaseString "begin" >> return ()
+
+end :: Parser ()
+end = token $ ignoreCaseString "end" >> return ()
+
+semi :: Parser ()
+semi = token $ char ';' >> return ()
+
+assign :: Parser ()
+assign = token $ string ":=" >> return ()
+
 compoundStatement :: Parser Program
 compoundStatement = do
-  _ <- token $ string "begin"
+  begin
   nodes <- statementList
-  _ <- token $ string "end"
+  end
   return nodes
 
 statementList :: Parser Program
 statementList =
   (do Compound n <- statement
-      _ <- token $ char ';'
+      semi
       Compound left <- statementList
       return $ Compound (n++left)) <|>
   statement
@@ -79,12 +114,15 @@ statementList =
 statement :: Parser Program
 statement = compoundStatement
   <|> assignmentStatement
-  <|> empty
+  <|> emptyStatement
+
+emptyStatement :: Parser Program
+emptyStatement = return $ Compound []
 
 assignmentStatement :: Parser Program
 assignmentStatement = do
   v <- variable
-  _ <- token $ string ":="
+  assign
   e <- expr
   return $ Compound [Assign v e]
 
@@ -102,7 +140,8 @@ factor =
       return v)
   <|> (token $ char '+' >> (UnaryOp Pos) <$> expr)
   <|> (token $ char '-' >> (UnaryOp Neg) <$> expr)
-  <|> (Val . read) <$> (token $ many $ satisfy isDigit)
+  <|> (ExprVal . read) <$> (token $ many $ satisfy isDigit)
+  <|> (ExprVar <$> variable)
 
 expr :: Parser Expr
 expr = do
@@ -124,13 +163,14 @@ term = do
                     '/' -> return (\i -> BinOp i Div r))
   return $ foldl (flip ($)) l opt
 
-parse :: String -> Expr
-parse ip = case runParser expr ip of
-            Just (x, _) -> x
-            Nothing -> error "Parser error"
+parse :: String -> Identity Expr
+parse ip = do y <- runParserT expr ip
+              case y of
+                Just (x, _) -> return x
+                Nothing -> error "Parser error"
 
 interpret :: Expr -> Int
-interpret (Val x) = x
+interpret (ExprVal x) = x
 interpret (BinOp l op r) = case op of
   Plus -> interpret l + interpret r
   Minus -> interpret l - interpret r
@@ -145,4 +185,4 @@ main = forever $
   do
     putStr "spi> "
     l <- getLine
-    putStrLn $ show $ interpret $ parse l
+    putStrLn $ show $ interpret $ runIdentity $ parse l
