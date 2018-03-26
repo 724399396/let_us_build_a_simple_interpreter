@@ -1,10 +1,13 @@
 {-# LANGUAGE DeriveFunctor #-}
-import Control.Monad
-import Control.Applicative
-import Data.Foldable
-import Data.Char
-import Data.Function
-import Data.Maybe
+
+module SPI where
+
+import           Control.Applicative
+import           Control.Monad
+import           Data.Char
+import           Data.Foldable
+import           Data.Function
+import           Data.Maybe
 
 newtype Identity a = Identity { runIdentity :: a } deriving Functor
 
@@ -16,10 +19,27 @@ instance Monad Identity where
   return = Identity
   ia >>= f = f $ runIdentity ia
 
-data ParserT m a = ParserT {runParserT :: String -> m (Maybe a,String)}
-  deriving Functor
+data StateT m s a = StateT { runStateT :: s -> m (a, s) } deriving Functor
 
-type Parser = ParserT Identity
+instance (Monad m) => Applicative (StateT m s) where
+  pure = return
+  (<*>) = ap
+
+instance (Monad m) => Monad (StateT m s) where
+  return a = StateT $ \s -> return (a, s)
+  sma >>= f = StateT $ \s -> do (a, s') <- runStateT sma s
+                                runStateT (f a) s'
+
+put :: (Monad m) => s -> StateT m s ()
+put s = StateT $ \_ -> return ((), s)
+
+get :: (Monad m) => StateT m s s
+get = StateT $ \s -> return (s,s)
+
+type State = StateT Identity
+
+data ParserT m a = ParserT { runParserT :: String -> m (Maybe a, String) }
+  deriving Functor
 
 instance (Monad m) => Applicative (ParserT m) where
   pure = return
@@ -29,7 +49,7 @@ instance (Monad m) => Monad (ParserT m) where
   return a = ParserT $ \s -> return $ (Just a,s)
   mpa >>= f = ParserT $ \s -> do (pa, s') <- runParserT mpa s
                                  case pa of
-                                   Just a -> runParserT (f a) s'
+                                   Just a  -> runParserT (f a) s'
                                    Nothing -> return (Nothing, s')
 
 instance (Monad m) => Alternative (ParserT m) where
@@ -37,7 +57,9 @@ instance (Monad m) => Alternative (ParserT m) where
   pa <|> pb = ParserT $ \s -> do w@(x,_) <- runParserT pa s
                                  case x of
                                    Nothing -> runParserT pb s
-                                   x -> return w
+                                   x       -> return w
+
+type Parser = ParserT Identity
 
 type Identifier = String
 data Op = Plus | Minus | Mul | Div deriving (Show, Eq)
@@ -48,15 +70,18 @@ data Expr = BinOp Expr Op Expr |
             ExprVar Var
             deriving Show
 
+type SymbolTable = [(Identifier, Int)]
 data Program = Compound [Assign] deriving Show
 data Assign = Assign Var Expr deriving Show
 data Var = Var Identifier deriving Show
+
+initSymbolTable = []
 
 satisfy :: (Char -> Bool) -> Parser Char
 satisfy cond = ParserT $ \s ->
   return $ case s of
              x:xs -> if (cond x) then (Just x,xs) else (Nothing, s)
-             _ -> (Nothing, s)
+             _    -> (Nothing, s)
 
 char :: Char -> Parser Char
 char c = satisfy (c==)
@@ -83,6 +108,7 @@ program :: Parser Program
 program = do
   r <- compoundStatement
   _ <- token $ char '.'
+  whitespace
   return r
 
 begin :: Parser ()
@@ -164,28 +190,28 @@ term = do
                     '/' -> return (\i -> BinOp i Div r))
   return $ foldl (flip ($)) l opt
 
-parse :: String -> Identity Program
-parse ip = do y <- runParserT program ip
+parse :: String -> Program
+parse ip = let y = runIdentity $ runParserT program ip
+           in
               case y of
-                (Just x, "") -> return x
-                (Just _, left) -> error $ "not consume " ++ left
-                (Nothing, left) -> error $ "error when parse" ++ left
+                (Just x, "")    -> x
+                (Just _, left)  -> error $ "not consume " ++ left
+                (Nothing, left) -> error $ "error when parse: " ++ left
 
-interpret :: Expr -> Int
-interpret (ExprVal x) = x
-interpret (BinOp l op r) = case op of
-  Plus -> interpret l + interpret r
-  Minus -> interpret l - interpret r
-  Mul -> interpret l * interpret r
-  Div -> interpret l `div` interpret r
-interpret (UnaryOp op e) = case op of
-  Pos -> interpret e
-  Neg -> negate $ interpret e
+interpret :: Program -> State SymbolTable ()
+interpret (Compound []) = return ()
+interpret (Compound ((Assign (Var x) v):xs)) = do
+  now <- get
+  put ((x, (interpretExpr v)) : now)
+  interpret (Compound xs)
 
-main :: IO String
-main = forever $
-  do
-    putStr "spi> "
-    l <- getLine
-    return ()
---    putStrLn $ show $ interpret $ runIdentity $ parse l
+interpretExpr :: Expr -> Int
+interpretExpr (ExprVal x) = x
+interpretExpr (BinOp l op r) = case op of
+  Plus  -> interpretExpr l + interpretExpr r
+  Minus -> interpretExpr l - interpretExpr r
+  Mul   -> interpretExpr l * interpretExpr r
+  Div   -> interpretExpr l `div` interpretExpr r
+interpretExpr (UnaryOp op e) = case op of
+  Pos -> interpretExpr e
+  Neg -> negate $ interpretExpr e
