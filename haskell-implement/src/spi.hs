@@ -62,7 +62,7 @@ instance (Monad m) => Alternative (ParserT m) where
 type Parser = ParserT Identity
 
 type Identifier = String
-data Op = Plus | Minus | Mul | Div deriving (Show, Eq)
+data Op = Plus | Minus | Mul | Div | IntDiv deriving (Show, Eq)
 data Unary = Pos | Neg deriving (Show, Eq)
 data Expr = BinOp Expr Op Expr |
             UnaryOp Unary Expr |
@@ -156,7 +156,7 @@ assignmentStatement = do
 variable :: Parser Var
 variable = do
   f <- token $ satisfy (\c -> isLetter c || c == '_')
-  left <- many $ token $ satisfy isLetter
+  left <- many $ satisfy isLetter
   return $ Var (f:left)
 
 factor :: Parser Expr
@@ -183,11 +183,14 @@ expr = do
 term :: Parser Expr
 term = do
   l <- factor
-  opt <- many (do o <- token (char '*' <|> char '/')
-                  r <- factor
-                  case o of
-                    '*' -> return (\i -> BinOp i Mul r)
-                    '/' -> return (\i -> BinOp i Div r))
+  opt <- many ((do o <- token (char '*' <|> char '/')
+                   r <- factor
+                   case o of
+                     '*' -> return (\i -> BinOp i Mul r)
+                     '/' -> return (\i -> BinOp i Div r))
+               <|> (do _ <- token $ string "div"
+                       r <- factor
+                       return (\i -> BinOp i IntDiv r)))
   return $ foldl (flip ($)) l opt
 
 parse :: String -> Program
@@ -202,16 +205,21 @@ interpret :: Program -> State SymbolTable ()
 interpret (Compound []) = return ()
 interpret (Compound ((Assign (Var x) v):xs)) = do
   now <- get
-  put ((x, (interpretExpr v)) : now)
+  value <- interpretExpr v
+  put ((map toLower x, value) : now)
   interpret (Compound xs)
 
-interpretExpr :: Expr -> Int
-interpretExpr (ExprVal x) = x
+interpretExpr :: Expr -> State SymbolTable Int
+interpretExpr (ExprVal x) = return x
+interpretExpr (ExprVar (Var x)) = get >>= \st -> case lookup (map toLower x) st of
+                                                   Just v -> return v
+                                                   Nothing -> error $ "variable not found: " ++ x
 interpretExpr (BinOp l op r) = case op of
-  Plus  -> interpretExpr l + interpretExpr r
-  Minus -> interpretExpr l - interpretExpr r
-  Mul   -> interpretExpr l * interpretExpr r
-  Div   -> interpretExpr l `div` interpretExpr r
+  Plus  -> liftA2 (+) (interpretExpr l) (interpretExpr r)
+  Minus -> liftA2 (-) (interpretExpr l) (interpretExpr r)
+  Mul   -> liftA2 (*) (interpretExpr l) (interpretExpr r)
+--  Div   -> liftA2 (/) (interpretExpr l) (interpretExpr r)
+  IntDiv -> liftA2 div (interpretExpr l) (interpretExpr r)
 interpretExpr (UnaryOp op e) = case op of
   Pos -> interpretExpr e
-  Neg -> negate $ interpretExpr e
+  Neg -> negate <$> interpretExpr e
