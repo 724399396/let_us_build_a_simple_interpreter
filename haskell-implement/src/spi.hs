@@ -66,12 +66,18 @@ data Op = Plus | Minus | Mul | Div | IntDiv deriving (Show, Eq)
 data Unary = Pos | Neg deriving (Show, Eq)
 data Expr = BinOp Expr Op Expr |
             UnaryOp Unary Expr |
-            ExprVal Int |
+            ExprInt Int |
+            ExprDouble Double |
             ExprVar Var
             deriving Show
 
-type SymbolTable = [(Identifier, Int)]
-data Program = Compound [Assign] deriving Show
+type SymbolTable = [(Identifier, Double)]
+data Program = Program Var Block deriving Show
+data Block = Block Declarations CompoundStatement deriving Show
+data Declarations = Declarations [VariableDeclaration] deriving Show
+data VariableDeclaration = VariableDeclaration Var TypeSpec deriving Show
+data CompoundStatement = CompoundStatement [Assign] deriving Show
+data TypeSpec = TInteger | TReal deriving Show
 data Assign = Assign Var Expr deriving Show
 data Var = Var Identifier deriving Show
 
@@ -101,15 +107,14 @@ oneOf strs = asum $ map char strs
 whitespace :: Parser ()
 whitespace = (many $ satisfy isSpace) >> return ()
 
-token :: Parser a -> Parser a
-token pa = whitespace >> pa
+whitespace1 :: Parser ()
+whitespace1 = (some $ satisfy isSpace) >> return ()
 
-program :: Parser Program
-program = do
-  r <- compoundStatement
-  _ <- token $ char '.'
-  whitespace
-  return r
+comment :: Parser ()
+comment = whitespace >> char '{' >> whitespace >> (many $ satisfy (/= '}')) >> char '}' >> return ()
+
+token :: Parser a -> Parser a
+token pa = many (whitespace1 <|> comment) >> pa
 
 begin :: Parser ()
 begin = token $ ignoreCaseString "begin" >> return ()
@@ -120,55 +125,85 @@ end = token $ ignoreCaseString "end" >> return ()
 semi :: Parser ()
 semi = token $ char ';' >> return ()
 
+colon :: Parser ()
+colon = token $ char ':' >> return ()
+
+comma :: Parser ()
+comma = token $ char ',' >> return ()
+
 assign :: Parser ()
 assign = token $ string ":=" >> return ()
 
-compoundStatement :: Parser Program
+program :: Parser Program
+program = do
+  _<- token $ ignoreCaseString "program"
+  name <- variable
+  semi
+  b <- block
+  _ <- token $ char '.'
+  token $ return ()
+  return $ Program name b
+
+block :: Parser Block
+block = do
+  vars <- declarations
+  statements <- compoundStatement
+  return $ Block vars statements
+
+declarations :: Parser Declarations
+declarations = do
+  _ <- token $ ignoreCaseString "var"
+  (Declarations . join) <$> (many $ (do v <- variableDeclarations
+                                        semi
+                                        return v))
+
+variableDeclarations :: Parser [VariableDeclaration]
+variableDeclarations = do
+  f <- variable
+  left <- many $ (comma >> variable)
+  colon
+  t <- typeSpec
+  return $ map (\x -> VariableDeclaration x t) (f:left)
+
+typeSpec :: Parser TypeSpec
+typeSpec = ((token $ ignoreCaseString "integer") >> return TInteger)
+        <|> ((token $ ignoreCaseString "real") >> return TReal)
+
+compoundStatement :: Parser CompoundStatement
 compoundStatement = do
   begin
   nodes <- statementList
   end
   return nodes
 
-statementList :: Parser Program
+statementList :: Parser CompoundStatement
 statementList =
-  (do Compound n <- statement
+  (do CompoundStatement n <- statement
       semi
-      Compound left <- statementList
-      return $ Compound (n++left)) <|>
+      CompoundStatement left <- statementList
+      return $ CompoundStatement (n++left)) <|>
   statement
 
-statement :: Parser Program
+statement :: Parser CompoundStatement
 statement = compoundStatement
   <|> assignmentStatement
   <|> emptyStatement
 
-emptyStatement :: Parser Program
-emptyStatement = return $ Compound []
+emptyStatement :: Parser CompoundStatement
+emptyStatement = return $ CompoundStatement []
 
-assignmentStatement :: Parser Program
+assignmentStatement :: Parser CompoundStatement
 assignmentStatement = do
   v <- variable
   assign
   e <- expr
-  return $ Compound [Assign v e]
+  return $ CompoundStatement [Assign v e]
 
 variable :: Parser Var
 variable = do
   f <- token $ satisfy (\c -> isLetter c || c == '_')
-  left <- many $ satisfy isLetter
+  left <- many $ satisfy (\x -> isLetter x || isDigit x)
   return $ Var (f:left)
-
-factor :: Parser Expr
-factor =
-  (do _ <- token $ char '('
-      v <- expr
-      _ <- token $ char ')'
-      return v)
-  <|> (token $ char '+' >> (UnaryOp Pos) <$> expr)
-  <|> (token $ char '-' >> (UnaryOp Neg) <$> expr)
-  <|> (ExprVar <$> variable)
-  <|> (ExprVal . read) <$> (token $ many $ satisfy isDigit)
 
 expr :: Parser Expr
 expr = do
@@ -188,10 +223,26 @@ term = do
                    case o of
                      '*' -> return (\i -> BinOp i Mul r)
                      '/' -> return (\i -> BinOp i Div r))
-               <|> (do _ <- token $ string "div"
+               <|> (do _ <- token $ ignoreCaseString "div"
                        r <- factor
                        return (\i -> BinOp i IntDiv r)))
   return $ foldl (flip ($)) l opt
+
+factor :: Parser Expr
+factor =
+  (do _ <- token $ char '('
+      v <- expr
+      _ <- token $ char ')'
+      return v)
+  <|> (token $ char '+' >> (UnaryOp Pos) <$> expr)
+  <|> (token $ char '-' >> (UnaryOp Neg) <$> expr)
+  <|> (ExprVar <$> variable)
+  <|> (ExprDouble . read) <$> (token $ (do i <- some $ satisfy isDigit
+                                           _ <- char '.'
+                                           f <- some $ satisfy isDigit
+                                           return $ i ++ '.':f))
+  <|> (ExprInt . read) <$> (token $ some $ satisfy isDigit)
+
 
 parse :: String -> Program
 parse ip = let y = runIdentity $ runParserT program ip
@@ -202,15 +253,15 @@ parse ip = let y = runIdentity $ runParserT program ip
                 (Nothing, left) -> error $ "error when parse: " ++ left
 
 interpret :: Program -> State SymbolTable ()
-interpret (Compound []) = return ()
-interpret (Compound ((Assign (Var x) v):xs)) = do
-  now <- get
-  value <- interpretExpr v
-  put ((map toLower x, value) : now)
-  interpret (Compound xs)
+interpret (Program _ (Block _ (CompoundStatement statements))) = mapM_ interpretAssign statements
+  where interpretAssign (Assign (Var x) v) = do
+          now <- get
+          value <- interpretExpr v
+          put ((map toLower x, value) : now)
 
-interpretExpr :: Expr -> State SymbolTable Int
-interpretExpr (ExprVal x) = return x
+interpretExpr :: Expr -> State SymbolTable Double
+interpretExpr (ExprInt x) = return (fromIntegral x)
+interpretExpr (ExprDouble x) = return x
 interpretExpr (ExprVar (Var x)) = get >>= \st -> case lookup (map toLower x) st of
                                                    Just v -> return v
                                                    Nothing -> error $ "variable not found: " ++ x
@@ -218,8 +269,8 @@ interpretExpr (BinOp l op r) = case op of
   Plus  -> liftA2 (+) (interpretExpr l) (interpretExpr r)
   Minus -> liftA2 (-) (interpretExpr l) (interpretExpr r)
   Mul   -> liftA2 (*) (interpretExpr l) (interpretExpr r)
---  Div   -> liftA2 (/) (interpretExpr l) (interpretExpr r)
-  IntDiv -> liftA2 div (interpretExpr l) (interpretExpr r)
+  Div   -> liftA2 (/) (interpretExpr l) (interpretExpr r)
+  IntDiv -> liftA2 (\x y -> fromIntegral $ (truncate x) `div` (truncate y)) (interpretExpr l) (interpretExpr r)
 interpretExpr (UnaryOp op e) = case op of
   Pos -> interpretExpr e
   Neg -> negate <$> interpretExpr e
