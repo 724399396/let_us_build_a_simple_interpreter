@@ -10,6 +10,7 @@ import           Data.Function
 import qualified Data.HashMap.Strict as Map
 import           Data.Maybe
 import           Text.Printf
+import Data.Monoid
 
 newtype Identity a = Identity { runIdentity :: a } deriving Functor
 
@@ -21,24 +22,35 @@ instance Monad Identity where
   return = Identity
   ia >>= f = f $ runIdentity ia
 
-data StateT m s a = StateT { runStateT :: s -> m (a, s) } deriving Functor
+data StateT s m a = StateT { runStateT :: s -> m (a, s) } deriving Functor
 
-instance (Monad m) => Applicative (StateT m s) where
+instance (Monad m) => Applicative (StateT s m) where
   pure = return
   (<*>) = ap
 
-instance (Monad m) => Monad (StateT m s) where
+instance (Monad m) => Monad (StateT s m) where
   return a = StateT $ \s -> return (a, s)
   sma >>= f = StateT $ \s -> do (a, s') <- runStateT sma s
                                 runStateT (f a) s'
 
-put :: (Monad m) => s -> StateT m s ()
+put :: (Monad m) => s -> StateT s m ()
 put s = StateT $ \_ -> return ((), s)
 
-get :: (Monad m) => StateT m s s
+get :: (Monad m) => StateT s m s
 get = StateT $ \s -> return (s,s)
 
-type State = StateT Identity
+type State s = StateT s Identity
+
+data WriterT w m a = WriterT { runWriterT :: w -> m (a, w) } deriving Functor
+
+instance (Monad m, Monoid w) => Applicative (WriterT w m) where
+  pure = return
+  (<*>) = ap
+
+instance (Monad m, Monoid w) => Monad (WriterT w m) where
+  return a = WriterT $ \w -> return (a, w)
+  wma >>= f = WriterT $ \w -> do (a, w') <- runWriterT wma w
+                                 runWriterT (f a) (w <> w')
 
 data ParserT m a = ParserT { runParserT :: String -> m (Maybe a, String) }
   deriving Functor
@@ -60,6 +72,17 @@ instance (Monad m) => Alternative (ParserT m) where
                                  case x of
                                    Nothing -> runParserT pb s
                                    x       -> return w
+
+class MonadTrans t where
+  lift :: Monad m => m a -> t m a
+
+instance MonadTrans (WriterT w) where
+  lift ma = WriterT $ \w -> do a <- ma
+                               return (a, w)
+
+instance MonadTrans (StateT s) where
+  lift ma = StateT $ \s -> do a <- ma
+                              return (a, w)
 
 type Parser = ParserT Identity
 
@@ -272,28 +295,28 @@ parse ip = let y = runIdentity $ runParserT program ip
                 (Just _, left)  -> error $ "not consume " ++ left
                 (Nothing, left) -> error $ "error when parse: " ++ left
 
-interpret :: Program -> State SymbolTable ()
+interpret :: Program -> WriterT [String] (State SymbolTable) ()
 interpret (Program _ (Block (Declarations vars) (CompoundStatement statements))) = mapM_ interpretDec vars >> mapM_ interpretAssign statements
   where interpretAssign (Assign (Var x) v) = do
-          now <- get
+          now <- lift get
           when (not $ Map.member x now) (error $ printf "variable %s not defined before used" x)
           value <- interpretExpr v
-          put (Map.adjust (\v -> setValue v value) (map toLower x) now)
+          lift $ put (Map.adjust (\v -> setValue v value) (map toLower x) now)
 
         setValue (IntegerSymbol i _) v = IntegerSymbol i (truncate v)
         setValue (RealSymbol i _) v    = RealSymbol i v
 
-        interpretDec (VariableDeclaration (Var x) t) = get >>= \now -> put (Map.insert x (case t of
-                                                                                            TInteger -> IntegerSymbol x undefined
-                                                                                            TReal -> RealSymbol x undefined) now)
+        interpretDec (VariableDeclaration (Var x) t) = lift get >>= \now -> lift $ put (Map.insert x (case t of
+                                                                                                        TInteger -> IntegerSymbol x undefined
+                                                                                                        TReal -> RealSymbol x undefined) now)
 
-interpretExpr :: Expr -> State SymbolTable Double
+interpretExpr :: Expr -> WriterT [String] (State SymbolTable) Double
 interpretExpr (ExprInt x) = return $ fromIntegral x
 interpretExpr (ExprDouble x) = return x
-interpretExpr (ExprVar (Var x)) = get >>= \st -> case Map.lookup (map toLower x) st of
-                                                   Just (IntegerSymbol _ v) -> return $ fromIntegral v
-                                                   Just (RealSymbol _ v) -> return v
-                                                   Nothing -> error $ "variable not found: " ++ x
+interpretExpr (ExprVar (Var x)) = lift get >>= \st -> case Map.lookup (map toLower x) st of
+                                                        Just (IntegerSymbol _ v) -> return $ fromIntegral v
+                                                        Just (RealSymbol _ v) -> return v
+                                                        Nothing -> error $ "variable not found: " ++ x
 interpretExpr (BinOp l op r) = case op of
   Plus  -> liftA2 (+) (interpretExpr l) (interpretExpr r)
   Minus -> liftA2 (-) (interpretExpr l) (interpretExpr r)
