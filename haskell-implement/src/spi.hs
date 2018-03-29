@@ -7,7 +7,9 @@ import           Control.Monad
 import           Data.Char
 import           Data.Foldable
 import           Data.Function
+import qualified Data.HashMap.Strict as Map
 import           Data.Maybe
+import           Text.Printf
 
 newtype Identity a = Identity { runIdentity :: a } deriving Functor
 
@@ -71,7 +73,24 @@ data Expr = BinOp Expr Op Expr |
             ExprVar Var
             deriving Show
 
-type SymbolTable = [(Identifier, Double)]
+data Symbol = BuiltinTypeSymbol TypeSpec
+                | IntegerSymbol Identifier Integer
+                | RealSymbol Identifier Double
+
+instance Show Symbol where
+  show (BuiltinTypeSymbol t) = show t
+  show (IntegerSymbol i _)   = printf "<%s:Integer>" (show i)
+  show (RealSymbol i _)      = printf "<%s:Real>" (show i)
+
+class ShowValue a where
+  showValue :: a -> String
+
+instance ShowValue Symbol where
+  showValue (BuiltinTypeSymbol t) = "builtin type"
+  showValue (IntegerSymbol _ x)   = show x
+  showValue (RealSymbol _ x)      = show x
+
+type SymbolTable = Map.HashMap Identifier Symbol
 data Program = Program Var Block deriving Show
 data Block = Block Declarations CompoundStatement deriving Show
 data Declarations = Declarations [VariableDeclaration] deriving Show
@@ -81,7 +100,8 @@ data TypeSpec = TInteger | TReal deriving Show
 data Assign = Assign Var Expr deriving Show
 data Var = Var Identifier deriving Show
 
-initSymbolTable = []
+initSymbolTable = Map.fromList [("INTEGER", BuiltinTypeSymbol TInteger)
+                               ,("REAL", BuiltinTypeSymbol TReal)]
 
 satisfy :: (Char -> Bool) -> Parser Char
 satisfy cond = ParserT $ \s ->
@@ -253,17 +273,26 @@ parse ip = let y = runIdentity $ runParserT program ip
                 (Nothing, left) -> error $ "error when parse: " ++ left
 
 interpret :: Program -> State SymbolTable ()
-interpret (Program _ (Block _ (CompoundStatement statements))) = mapM_ interpretAssign statements
+interpret (Program _ (Block (Declarations vars) (CompoundStatement statements))) = mapM_ interpretDec vars >> mapM_ interpretAssign statements
   where interpretAssign (Assign (Var x) v) = do
           now <- get
+          when (not $ Map.member x now) (error $ printf "variable %s not defined before used" x)
           value <- interpretExpr v
-          put ((map toLower x, value) : now)
+          put (Map.adjust (\v -> setValue v value) (map toLower x) now)
+
+        setValue (IntegerSymbol i _) v = IntegerSymbol i (truncate v)
+        setValue (RealSymbol i _) v    = RealSymbol i v
+
+        interpretDec (VariableDeclaration (Var x) t) = get >>= \now -> put (Map.insert x (case t of
+                                                                                            TInteger -> IntegerSymbol x undefined
+                                                                                            TReal -> RealSymbol x undefined) now)
 
 interpretExpr :: Expr -> State SymbolTable Double
-interpretExpr (ExprInt x) = return (fromIntegral x)
+interpretExpr (ExprInt x) = return $ fromIntegral x
 interpretExpr (ExprDouble x) = return x
-interpretExpr (ExprVar (Var x)) = get >>= \st -> case lookup (map toLower x) st of
-                                                   Just v -> return v
+interpretExpr (ExprVar (Var x)) = get >>= \st -> case Map.lookup (map toLower x) st of
+                                                   Just (IntegerSymbol _ v) -> return $ fromIntegral v
+                                                   Just (RealSymbol _ v) -> return v
                                                    Nothing -> error $ "variable not found: " ++ x
 interpretExpr (BinOp l op r) = case op of
   Plus  -> liftA2 (+) (interpretExpr l) (interpretExpr r)
