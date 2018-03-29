@@ -569,10 +569,25 @@ class SymbolTableBuilder(NodeVisitor):
         var_symbol = VarSymbol(var_name, type_symbol)
         self.symtab.define(var_symbol)
 
+    def visit_Assign(self, node):
+        var_name = node.left.value
+        var_symbol = self.symtab.lookup(var_name)
+        if var_symbol is None:
+            raise NameError(repr(var_name))
+
+        self.visit(node.right)
+
+    def visit_Var(self, node):
+        var_name = node.value
+        var_symbol = self.symtab.lookup(var_name)
+
+        if var_symbol is None:
+            raise NameError(repr(var_name))
+
 class Interpreter(NodeVisitor):
-    def __init__(self, parser):
-        self.parser = parser
-        self.GLOBAL_SCOPE = {}
+    def __init__(self, tree):
+        self.tree = tree
+        self.GLOBAL_MEMORY = {}
 
     def visit_BinOp(self, node):
         if node.op.type == PLUS:
@@ -604,11 +619,11 @@ class Interpreter(NodeVisitor):
 
     def visit_Assign(self, node):
         var_name = node.left.value
-        self.GLOBAL_SCOPE[var_name] = self.visit(node.right)
+        self.GLOBAL_MEMORY[var_name] = self.visit(node.right)
 
     def visit_Var(self, node):
         var_name = node.value
-        val = self.GLOBAL_SCOPE.get(var_name)
+        val = self.GLOBAL_MEMORY.get(var_name)
         if val is None:
             raise NameError(repr(var_name))
         else:
@@ -629,7 +644,7 @@ class Interpreter(NodeVisitor):
         pass
 
     def interpret(self):
-        tree = self.parser.parse()
+        tree = self.tree
         return self.visit(tree)
 
 
@@ -639,9 +654,19 @@ def main():
 
     lexer = Lexer(text)
     parser = Parser(lexer)
-    interpreter = Interpreter(parser)
-    interpreter.interpret()
-    for k, v in sorted(interpreter.GLOBAL_SCOPE.items()):
+    tree = parser.parse()
+    symtab_builder = SymbolTableBuilder()
+    symtab_builder.visit(tree)
+    print('')
+    print('Symbol Table contents:')
+    print(symtab_builder.symtab)
+
+    interpreter = Interpreter(tree)
+    result = interpreter.interpret()
+
+    print('')
+    print('Run-time GLOBAL_MEMORY contents:')
+    for k, v in sorted(interpreter.GLOBAL_MEMORY.items()):
         print('%s = %s' % (k, v))
 
 if __name__ == '__main__':
