@@ -2,6 +2,12 @@
 
 module SPI where
 
+import           Identity
+import           MonadTrans
+import           Parser
+import           State
+import           Writer
+
 import           Control.Applicative
 import           Control.Monad
 import           Data.Char
@@ -9,84 +15,14 @@ import           Data.Foldable
 import           Data.Function
 import qualified Data.HashMap.Strict as Map
 import           Data.Maybe
+import           Data.Monoid
 import           Text.Printf
-import Data.Monoid
 
-newtype Identity a = Identity { runIdentity :: a } deriving Functor
-
-instance Applicative Identity where
-  pure = return
-  (<*>) = ap
-
-instance Monad Identity where
-  return = Identity
-  ia >>= f = f $ runIdentity ia
-
-data StateT s m a = StateT { runStateT :: s -> m (a, s) } deriving Functor
-
-instance (Monad m) => Applicative (StateT s m) where
-  pure = return
-  (<*>) = ap
-
-instance (Monad m) => Monad (StateT s m) where
-  return a = StateT $ \s -> return (a, s)
-  sma >>= f = StateT $ \s -> do (a, s') <- runStateT sma s
-                                runStateT (f a) s'
-
-put :: (Monad m) => s -> StateT s m ()
-put s = StateT $ \_ -> return ((), s)
-
-get :: (Monad m) => StateT s m s
-get = StateT $ \s -> return (s,s)
-
-type State s = StateT s Identity
-
-data WriterT w m a = WriterT { runWriterT :: w -> m (a, w) } deriving Functor
-
-instance (Monad m, Monoid w) => Applicative (WriterT w m) where
-  pure = return
-  (<*>) = ap
-
-instance (Monad m, Monoid w) => Monad (WriterT w m) where
-  return a = WriterT $ \w -> return (a, w)
-  wma >>= f = WriterT $ \w -> do (a, w') <- runWriterT wma w
-                                 runWriterT (f a) (w <> w')
-
-data ParserT m a = ParserT { runParserT :: String -> m (Maybe a, String) }
-  deriving Functor
-
-instance (Monad m) => Applicative (ParserT m) where
-  pure = return
-  (<*>) = ap
-
-instance (Monad m) => Monad (ParserT m) where
-  return a = ParserT $ \s -> return $ (Just a,s)
-  mpa >>= f = ParserT $ \s -> do (pa, s') <- runParserT mpa s
-                                 case pa of
-                                   Just a  -> runParserT (f a) s'
-                                   Nothing -> return (Nothing, s')
-
-instance (Monad m) => Alternative (ParserT m) where
-  empty = ParserT $ \s -> return (Nothing,s)
-  pa <|> pb = ParserT $ \s -> do w@(x,_) <- runParserT pa s
-                                 case x of
-                                   Nothing -> runParserT pb s
-                                   x       -> return w
-
-class MonadTrans t where
-  lift :: Monad m => m a -> t m a
-
-instance MonadTrans (WriterT w) where
-  lift ma = WriterT $ \w -> do a <- ma
-                               return (a, w)
-
-instance MonadTrans (StateT s) where
-  lift ma = StateT $ \s -> do a <- ma
-                              return (a, w)
 
 type Parser = ParserT Identity
 
 type Identifier = String
+type TypeDecl = String
 data Op = Plus | Minus | Mul | Div | IntDiv deriving (Show, Eq)
 data Unary = Pos | Neg deriving (Show, Eq)
 data Expr = BinOp Expr Op Expr |
@@ -99,6 +35,15 @@ data Expr = BinOp Expr Op Expr |
 data Symbol = BuiltinTypeSymbol TypeSpec
                 | IntegerSymbol Identifier Integer
                 | RealSymbol Identifier Double
+
+getBultinSymbol :: Symbol -> Maybe TypeSpec
+getBultinSymbol (BuiltinTypeSymbol t) = Just t
+getBultinSymbol _                     = Nothing
+
+getValueSymbol :: Symbol -> Double
+getValueSymbol (IntegerSymbol _ v) =  fromIntegral v
+getValueSymbol (RealSymbol _ v) =  v
+getValueSymbol (BuiltinTypeSymbol t) = error $ printf "builtin symbol %s no value" (show t)
 
 instance Show Symbol where
   show (BuiltinTypeSymbol t) = show t
@@ -117,14 +62,14 @@ type SymbolTable = Map.HashMap Identifier Symbol
 data Program = Program Var Block deriving Show
 data Block = Block Declarations CompoundStatement deriving Show
 data Declarations = Declarations [VariableDeclaration] deriving Show
-data VariableDeclaration = VariableDeclaration Var TypeSpec deriving Show
+data VariableDeclaration = VariableDeclaration Var TypeDecl deriving Show
 data CompoundStatement = CompoundStatement [Assign] deriving Show
 data TypeSpec = TInteger | TReal deriving Show
 data Assign = Assign Var Expr deriving Show
 data Var = Var Identifier deriving Show
 
-initSymbolTable = Map.fromList [("INTEGER", BuiltinTypeSymbol TInteger)
-                               ,("REAL", BuiltinTypeSymbol TReal)]
+initSymbolTable = Map.fromList [("integer", BuiltinTypeSymbol TInteger)
+                               ,("real", BuiltinTypeSymbol TReal)]
 
 satisfy :: (Char -> Bool) -> Parser Char
 satisfy cond = ParserT $ \s ->
@@ -208,9 +153,8 @@ variableDeclarations = do
   t <- typeSpec
   return $ map (\x -> VariableDeclaration x t) (f:left)
 
-typeSpec :: Parser TypeSpec
-typeSpec = ((token $ ignoreCaseString "integer") >> return TInteger)
-        <|> ((token $ ignoreCaseString "real") >> return TReal)
+typeSpec :: Parser TypeDecl
+typeSpec = token $ some $ satisfy isLetter
 
 compoundStatement :: Parser CompoundStatement
 compoundStatement = do
@@ -295,28 +239,41 @@ parse ip = let y = runIdentity $ runParserT program ip
                 (Just _, left)  -> error $ "not consume " ++ left
                 (Nothing, left) -> error $ "error when parse: " ++ left
 
-interpret :: Program -> WriterT [String] (State SymbolTable) ()
+type Interpreter = WriterT [String] (State SymbolTable)
+
+interpret :: Program -> Interpreter ()
 interpret (Program _ (Block (Declarations vars) (CompoundStatement statements))) = mapM_ interpretDec vars >> mapM_ interpretAssign statements
   where interpretAssign (Assign (Var x) v) = do
           now <- lift get
           when (not $ Map.member x now) (error $ printf "variable %s not defined before used" x)
+          symbolLookup x
           value <- interpretExpr v
           lift $ put (Map.adjust (\v -> setValue v value) (map toLower x) now)
 
         setValue (IntegerSymbol i _) v = IntegerSymbol i (truncate v)
         setValue (RealSymbol i _) v    = RealSymbol i v
 
-        interpretDec (VariableDeclaration (Var x) t) = lift get >>= \now -> lift $ put (Map.insert x (case t of
-                                                                                                        TInteger -> IntegerSymbol x undefined
-                                                                                                        TReal -> RealSymbol x undefined) now)
+        interpretDec (VariableDeclaration (Var x) t) = do symbolDec <- symbolLookup t
+                                                          let s = getBultinSymbol symbolDec
+                                                          when (not $ isJust s) (error $ "no builtin type " ++ t)
+                                                          symbolDefine x (case s of
+                                                                             Just TInteger -> IntegerSymbol x undefined
+                                                                             Just TReal -> RealSymbol x undefined)
 
-interpretExpr :: Expr -> WriterT [String] (State SymbolTable) Double
+symbolLookup :: Identifier -> Interpreter Symbol
+symbolLookup x = do tell [printf "Lookup: %s" x]
+                    st <- lift get
+                    case Map.lookup (map toLower x) st of
+                         Just x  -> return x
+                         Nothing -> error $ "variable not found: " ++ x
+
+symbolDefine :: Identifier -> Symbol -> Interpreter ()
+symbolDefine n s = lift get >>= lift . put . Map.insert (map toLower n) s >> tell [printf "Define: %s" (show s)]
+
+interpretExpr :: Expr -> Interpreter Double
 interpretExpr (ExprInt x) = return $ fromIntegral x
 interpretExpr (ExprDouble x) = return x
-interpretExpr (ExprVar (Var x)) = lift get >>= \st -> case Map.lookup (map toLower x) st of
-                                                        Just (IntegerSymbol _ v) -> return $ fromIntegral v
-                                                        Just (RealSymbol _ v) -> return v
-                                                        Nothing -> error $ "variable not found: " ++ x
+interpretExpr (ExprVar (Var x)) = symbolLookup x >>= return . getValueSymbol
 interpretExpr (BinOp l op r) = case op of
   Plus  -> liftA2 (+) (interpretExpr l) (interpretExpr r)
   Minus -> liftA2 (-) (interpretExpr l) (interpretExpr r)
@@ -326,3 +283,6 @@ interpretExpr (BinOp l op r) = case op of
 interpretExpr (UnaryOp op e) = case op of
   Pos -> interpretExpr e
   Neg -> negate <$> interpretExpr e
+
+run :: String -> (((), [String]), SymbolTable)
+run c = runIdentity $ (runStateT (runWriterT (interpret (parse c))) initSymbolTable)

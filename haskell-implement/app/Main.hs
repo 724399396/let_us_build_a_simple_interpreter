@@ -10,7 +10,8 @@ import Text.Printf
 main :: IO ()
 main = do [fileName] <- getArgs
           c <- readFile fileName
-          st <- return $ snd $ runIdentity $ (runStateT (interpret (parse c)) initSymbolTable)
+          let ((_, log), st) = run c
+          mapM_ putStrLn log
           putStrLn "Symbol Table contents:"
           printf "Symbols: %s\n" (show $ Map.elems st)
           putStrLn ""
