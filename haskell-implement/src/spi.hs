@@ -61,8 +61,9 @@ instance ShowValue Symbol where
 type SymbolTable = Map.HashMap Identifier Symbol
 data Program = Program Var Block deriving Show
 data Block = Block Declarations CompoundStatement deriving Show
-data Declarations = Declarations [VariableDeclaration] deriving Show
+data Declarations = Declarations [VariableDeclaration] [ProcedureDeclaration] deriving Show
 data VariableDeclaration = VariableDeclaration Var TypeDecl deriving Show
+data ProcedureDeclaration = ProcedureDeclaration Var Block deriving Show
 data CompoundStatement = CompoundStatement [Assign] deriving Show
 data TypeSpec = TInteger | TReal deriving Show
 data Assign = Assign Var Expr deriving Show
@@ -141,9 +142,16 @@ block = do
 declarations :: Parser Declarations
 declarations = do
   _ <- token $ ignoreCaseString "var"
-  (Declarations . join) <$> (many $ (do v <- variableDeclarations
-                                        semi
-                                        return v))
+  vars <- join <$> (many $ (do v <- variableDeclarations
+                               semi
+                               return v))
+  procedures <- many $ (do _ <- token $ ignoreCaseString "procedure"
+                           n <- variable
+                           semi
+                           b <- block
+                           semi
+                           return $ ProcedureDeclaration n b)
+  return $ Declarations vars procedures
 
 variableDeclarations :: Parser [VariableDeclaration]
 variableDeclarations = do
@@ -242,7 +250,7 @@ parse ip = let y = runIdentity $ runParserT program ip
 type Interpreter = WriterT [String] (State SymbolTable)
 
 interpret :: Program -> Interpreter ()
-interpret (Program _ (Block (Declarations vars) (CompoundStatement statements))) = mapM_ interpretDec vars >> mapM_ interpretAssign statements
+interpret (Program _ (Block (Declarations vars procedures) (CompoundStatement statements))) = mapM_ interpretDec vars >> mapM_ interpretAssign statements
   where interpretAssign (Assign (Var x) v) = do
           now <- lift get
           when (not $ Map.member x now) (error $ printf "variable %s not defined before used" x)
@@ -265,10 +273,13 @@ symbolLookup x = do tell [printf "Lookup: %s" x]
                     st <- lift get
                     case Map.lookup (map toLower x) st of
                          Just x  -> return x
-                         Nothing -> error $ "variable not found: " ++ x
+                         Nothing -> error $ "Symbol(identifier) not found: " ++ x
 
 symbolDefine :: Identifier -> Symbol -> Interpreter ()
-symbolDefine n s = lift get >>= lift . put . Map.insert (map toLower n) s >> tell [printf "Define: %s" (show s)]
+symbolDefine n s = lift get >>= \table -> do
+  when (Map.member n table) $ error $ printf "Duplicate identifier %s found" n
+  lift $ put $ Map.insert (map toLower n) s table
+  tell [printf "Define: %s" (show s)]
 
 interpretExpr :: Expr -> Interpreter Double
 interpretExpr (ExprInt x) = return $ fromIntegral x
