@@ -78,7 +78,7 @@ class ProcedureSymbol(Symbol):
 
     def __str__(self):
         return '<{class_name}(name={name}, parameters={params})>'.format(
-            class_name=self.__class__.__name__
+            class_name=self.__class__.__name__,
             name=self.name,
             params=self.params
         )
@@ -400,7 +400,7 @@ class Parser(object):
             self.eat(ID)
             params = []
 
-            if self.current_token.type = LPAREN:
+            if self.current_token.type == LPAREN:
                 self.eat(LPAREN)
                 params = self.formal_parameter_list()
                 self.eat(RPAREN)
@@ -661,18 +661,14 @@ class SemanticAnalyzer(NodeVisitor):
 
     def visit_VarDecl(self, node):
         type_name = node.type_node.value
-        type_symbol = self.symtab.lookup(type_name)
+        type_symbol = self.current_scope.lookup(type_name)
         var_name = node.var_node.value
         var_symbol = VarSymbol(var_name, type_symbol)
-        if self.symtab.lookup(var_name) is not None:
-            raise Exception(
-                "Error: Duplicate identifier '%s' found" % var_name
-            )
-        self.symtab.insert(var_symbol)
+        self.current_scope.insert(var_symbol)
 
     def visit_Assign(self, node):
         var_name = node.left.value
-        var_symbol = self.symtab.lookup(var_name)
+        var_symbol = self.current_scope.lookup(var_name)
         if var_symbol is None:
             raise NameError(repr(var_name))
 
@@ -680,7 +676,7 @@ class SemanticAnalyzer(NodeVisitor):
 
     def visit_Var(self, node):
         var_name = node.value
-        var_symbol = self.symtab.lookup(var_name)
+        var_symbol = self.current_scope.lookup(var_name)
 
         if var_symbol is None:
             raise Exception(
@@ -711,100 +707,23 @@ class SemanticAnalyzer(NodeVisitor):
         print(procedure_scope)
         print('LEAVE scope: %s ' % proc_name)
 
-class Interpreter(NodeVisitor):
-    def __init__(self, tree):
-        self.tree = tree
-        self.GLOBAL_MEMORY = {}
-
-    def visit_BinOp(self, node):
-        if node.op.type == PLUS:
-            return self.visit(node.left) + self.visit(node.right)
-        elif node.op.type == MINUS:
-            return self.visit(node.left) - self.visit(node.right)
-        elif node.op.type == MUL:
-            return self.visit(node.left) * self.visit(node.right)
-        elif node.op.type == INTEGER_DIV:
-            return self.visit(node.left) // self.visit(node.right)
-        elif node.op.type == FLOAT_DIV:
-            return float(self.visit(node.left)) / float(self.visit(node.right))
-
-    def visit_Num(self, node):
-        return node.value
-
-    def visit_UnaryOp(self, node):
-        if node.op.type == PLUS:
-            return self.visit(node.expr)
-        elif node.op.type == MINUS:
-            return -self.visit(node.expr)
-
-    def visit_Compound(self, node):
-        for child in node.children:
-            self.visit(child)
-
-    def visit_NoOp(self, node):
-        pass
-
-    def visit_Assign(self, node):
-        var_name = node.left.value
-        self.GLOBAL_MEMORY[var_name] = self.visit(node.right)
-
-    def visit_Var(self, node):
-        var_name = node.value
-        val_symbol = self.current_scope.lookup(var_name)
-        if val_symbol is None:
-            raise Exception(
-                "Error: Symbol(identifier) not found '%s'" % var_name
-            )
-        else:
-            return val
-
-    def visit_Program(self, node):
-        self.visit(node.block)
-
-    def visit_Block(self, node):
-        for declaration in node.declarations:
-            self.visit(declaration)
-        self.visit(node.compound_statement)
-
-    def visit_VarDecl(self, node):
-        type_name = node.type_node.value
-        type_symbol = self.current_scope.lookup(type_name)
-
-        var_name = node.var_node.value
-        var_symbol = VarSymbol(var_name, type_symbol)
-        self.current_scope.insert(var_symbol)
-
-    def visit_Type(self, node):
-        pass
-
-    def visit_ProcedureDecl(self, node):
-        pass
-
-    def interpret(self):
-        tree = self.tree
-        return self.visit(tree)
-
-
 def main():
-    import sys
-    text = open(sys.argv[1], 'r').read()
+    text = """
+program Main;
+   var x, y: real;
+   procedure Alpha(a : integer);
+      var y : integer;
+   begin
+   end;
+begin { Main }
+end.  { Main }
+"""
 
     lexer = Lexer(text)
     parser = Parser(lexer)
     tree = parser.parse()
-    symtab_builder = SymbolTableBuilder()
-    symtab_builder.visit(tree)
-    print('')
-    print('Symbol Table contents:')
-    print(symtab_builder.symtab)
-
-    interpreter = Interpreter(tree)
-    result = interpreter.interpret()
-
-    print('')
-    print('Run-time GLOBAL_MEMORY contents:')
-    for k, v in sorted(interpreter.GLOBAL_MEMORY.items()):
-        print('%s = %s' % (k, v))
+    semantic_analyzer = SemanticAnalyzer()
+    semantic_analyzer.visit(tree)
 
 if __name__ == '__main__':
     main()
